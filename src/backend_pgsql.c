@@ -113,20 +113,54 @@ b64dec_payload(const char *encoded_payload, int *count) {
 static int
 match(const char *salted, const char *guess, int salt_length) {
 
+    int retval = 0;
+    SYSLOG("T8.5")
     /* Remove hash id */
-    char *hash_id = remove_hash( (char **) &salted );
-    /* salted points to '}'+1 */
 
+    int flag = 0; // 0 - opening bracket, record next position. 1 - in hash_id, increment length accumulator
+    int hash_id_start = -1;
+    int hash_id_len = 0;
+    for(int i = 0; i < strlen(salted); i++){
+        if(salted[i] == '}') {
+            break;
+        }
+        if(flag == 1) {
+            hash_id_start = i;
+            flag = 2;
+        }
+        if(flag == 2) {
+            hash_id_len++;
+        }
+        if(salted[i] == '{') {
+            flag = 1;
+        }
+    }
+
+    char * digest_only = malloc(strlen(salted) + 1 - 2 - hash_id_len);  // -2 for '{}' , +1 for \0
+    for(int i = 0 ; i < strlen(salted) - 2 - hash_id_len; i++){
+        digest_only[i] = salted[i + (hash_id_start + hash_id_len - 1) + 2];
+    }
+    digest_only[strlen(salted) - 2 - hash_id_len] = 0;  // I really feel there should be a +1 here.........
+
+    char * hash_id = malloc(hash_id_len + 1);
+    for(int i = 0; i < hash_id_len; i++){
+        hash_id[i] = salted[i + 1 + hash_id_start - 1];
+    }
+    hash_id[hash_id_len + 1] = 0;
+
+//    char *hash_id = remove_hash( (char **) &salted );
+    /* salted points to '}'+1 */
+    SYSLOG("T9 %s %s %s %d %d %lu %lu %lu", salted, digest_only, hash_id, hash_id_len, hash_id_start, strlen(salted) + 1 - 2 - hash_id_len, strlen(salted), strlen(digest_only))
     /* Payload Base64 decode */
     int   payload_length;
-    char *payload = b64dec_payload( salted, &payload_length );
+    char *payload = b64dec_payload( digest_only, &payload_length );
     /* Payload is HASH(passwd || salt) || salt */
 
     /* Split using salt length */
     char *salt = payload + payload_length - salt_length;
     /* (payload,payload_length) describe HASH(passwd || salt)
      * (salt,salt_length) describe salt */
-
+    SYSLOG("T10")
     /* Catenate guess with salt */
     int  guess_length    = strlen( guess );
     int  catenate_length = guess_length + salt_length;
@@ -135,20 +169,27 @@ match(const char *salted, const char *guess, int salt_length) {
     strcpy( catenate, guess );
     for (int i = 0; i < salt_length ; i++)
         *(catenate + guess_length + i) = salt[i];
-
+    SYSLOG("T11")
     /* Hash catenation */
     const algorithm_descriptor *p = get_algorithm( hash_id );
 
     /* Compare only for supported algorithms */
     if (p != NULL) {
         char *digest = calloc( 1, p->buffer_size );
+        SYSLOG("T12")
         gcry_md_hash_buffer( p->algorithm,
                              digest,
                              catenate,
                              catenate_length );
-        return !memcmp( digest, payload, p->buffer_size );
-    } 
-    return 0;
+        SYSLOG("T13")
+        retval = !memcmp( digest, payload, p->buffer_size );
+        free(digest);
+        SYSLOG("T14")
+    }
+    free(catenate);
+    SYSLOG("T15")
+
+    return retval;
 }
 
 
@@ -374,22 +415,29 @@ backend_authenticate(const char *service, const char *user, const char *passwd, 
 		return PAM_AUTH_ERR;
 
 	DBGLOG("query: %s", options->query_auth);
-	rc = PAM_AUTH_ERR;	
+	rc = PAM_AUTH_ERR;
+	DBGLOG("T1")
 	if (pg_execParam(conn, &res, options->query_auth, service, user, passwd, rhost) == PAM_SUCCESS) {
+        DBGLOG("T2")
 		row_count = PQntuples(res);
 		if (row_count == 0) {
 			rc = PAM_USER_UNKNOWN;
 		} else {
+            DBGLOG("T3 %d", row_count)
 			for (int i = 0; i < row_count && rc != PAM_SUCCESS; i++) {
 				if (!PQgetisnull(res, i, 0)) {
+                    DBGLOG("T4")
 					char *stored_pw = PQgetvalue(res, i, 0);
+                    DBGLOG("T5")
 					if (options->pw_type == PW_FUNCTION) {
 						if (!strcmp(stored_pw, "t")) {
 							rc = PAM_SUCCESS;
 						}
 					} else {
+                        DBGLOG("T6")
 						tmp = password_encrypt(options, user, passwd, stored_pw);
-						if (tmp != NULL && !strcmp(stored_pw, tmp)) {
+                        DBGLOG("pw: %s; tmp: %s", passwd, tmp);
+                        if (tmp != NULL && !strcmp(stored_pw, tmp)) {
 							rc = PAM_SUCCESS;
 						}
 						free (tmp);
@@ -408,7 +456,7 @@ char *
 password_encrypt(modopt_t *options, const char *user, const char *pass, const char *salt)
 {
 	char *s = NULL;
-
+    DBGLOG("T7");
 	switch(options->pw_type) {
 		case PW_CRYPT:
 		case PW_CRYPT_MD5:
@@ -472,6 +520,7 @@ password_encrypt(modopt_t *options, const char *user, const char *pass, const ch
 		}
 		break;
         case PW_SALTEDHASH: {
+            DBGLOG("T8 %s, %s, %d", salt, pass, options->salt_size)
             if (match( salt, pass, options->salt_size )) {
                s = strdup(salt);
             }
