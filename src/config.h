@@ -83,3 +83,5 @@
 
 /* Version number of package */
 #define VERSION "0.7.3.2"
+
+#define NEED_LIBGCRYPT_VERSION "1.2.0"
